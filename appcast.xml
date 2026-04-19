@@ -6,6 +6,23 @@
     <description>Most recent releases of SpliceKit Motion</description>
     <language>en</language>
     <item>
+      <title>SpliceKit Motion v1.0.3</title>
+      <sparkle:version>1.0.3</sparkle:version>
+      <sparkle:shortVersionString>1.0.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Sun, 19 Apr 2026 17:03:45 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 1.0.3</h2>
+        <p>Agent ergonomics. New RPCs: bridge.alive / bridge.describe / bridge.metrics (observability), palette.block / palette.unblock / palette.listBlocked / palette.isBlocked (runtime-mutable blocklist persisted to disk), command.execute dryRun (preflight without firing), window.listModals / modal.dismiss (detect + close stuck dialogs), debug.lastCrash (parsed IPS reports), debug.mainThreadBacktrace (best-effort host-app stack), log.tail / log.path (log without shelling), batch.execute (multi-RPC), session.snapshot / session.restore (document set save/restore). Every RPC now auto-records per-method latency + error counters.</p>
+      ]]></description>
+      <enclosure
+        url="https://github.com/elliotttate/SpliceKitMotion/releases/download/v1.0.3/SpliceKitMotion-v1.0.3.dmg"
+        sparkle:edSignature="nZMr+A1UATFQc8nQ3IABUdmmoXLNHSzdMloGBVXTtcEJOR4r2KCqmc3rNjXpS+1MsQ/27kbrd6eSSb3D5FgCCQ=="
+        length="10939513"
+        type="application/octet-stream" />
+    </item>
+
+    <item>
       <title>SpliceKit Motion v1.0.2</title>
       <sparkle:version>1.0.2</sparkle:version>
       <sparkle:shortVersionString>1.0.2</sparkle:shortVersionString>
