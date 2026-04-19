@@ -6,6 +6,23 @@
     <description>Most recent releases of SpliceKit Motion</description>
     <language>en</language>
     <item>
+      <title>SpliceKit Motion v1.0.4</title>
+      <sparkle:version>1.0.4</sparkle:version>
+      <sparkle:shortVersionString>1.0.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Sun, 19 Apr 2026 18:01:59 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 1.0.4</h2>
+        <p>Menu bar restoration: all File/Edit/Mark/Object/View/Window/Help menus now appear on launch (previously Motion showed only the 'Motion' app menu because our onboarding bypass short-circuited Motion's menu restore chain). Bridge robustness: NSNull scrubber prevents null-in-params crashes across 200+ handlers, debug.eval rewritten to use KVC (fixes SIGSEGV on primitive-returning selectors like 'count'), Lua VM self-initializes + UTF-8 safe + 5s timeout, command.execute validates action type. New RPCs: window.list enumerates ALL windows (off-thread fallback when main thread is blocked), modal.dismiss accepts 'title' substring match and 'emergency: true' for [NSApp abortModal]. Expanded blocklist: pasteAsPlainText: (pointer-auth fault in OZEditTool snap timer).</p>
+      ]]></description>
+      <enclosure
+        url="https://github.com/elliotttate/SpliceKitMotion/releases/download/v1.0.4/SpliceKitMotion-v1.0.4.dmg"
+        sparkle:edSignature="o21E9z/tprjKqiZNsXeOtVvhX8ygLUNEOmMr4Zcf0eXZJ8Mval57L0viRl7hIVXssS2dopSRxjHw/z9PEf8oDw=="
+        length="10953358"
+        type="application/octet-stream" />
+    </item>
+
+    <item>
       <title>SpliceKit Motion v1.0.3</title>
       <sparkle:version>1.0.3</sparkle:version>
       <sparkle:shortVersionString>1.0.3</sparkle:shortVersionString>
