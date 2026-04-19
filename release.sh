@@ -25,6 +25,7 @@ BUILD_DIR="patcher/build"
 BUILT_APP_NAME="SpliceKitMotion.app"
 DMG_NAME="SpliceKitMotion-v${VERSION}.dmg"
 DMG_PATH="patcher/${DMG_NAME}"
+SPARKLE_SIGN="/tmp/bin/sign_update"
 
 CURRENT_BRANCH="$(git branch --show-current)"
 PUSH_REMOTE="$(git config --get branch.${CURRENT_BRANCH}.remote || echo origin)"
@@ -107,8 +108,33 @@ mkdir -p "${APP_RES}"
 cp build/MotionKit "${APP_RES}/MotionKit"
 echo "  Copied MotionKit dylib"
 
-echo "[5/12] Signing embedded binaries..."
-# Sign any Mach-O in Resources (the MotionKit dylib)
+echo "[5/12] Signing embedded binaries (inside-out)..."
+SPARKLE_FW="${BUILT_APP}/Contents/Frameworks/Sparkle.framework"
+
+# Sparkle XPC services (innermost)
+if [ -d "${SPARKLE_FW}" ]; then
+    for xpc in "${SPARKLE_FW}/Versions/B/XPCServices/"*.xpc; do
+        if [ -d "$xpc" ]; then
+            codesign --force --options runtime --timestamp --sign "${SIGN_ID}" "$xpc"
+            echo "  Signed: $(basename "$xpc")"
+        fi
+    done
+
+    if [ -d "${SPARKLE_FW}/Versions/B/Updater.app" ]; then
+        codesign --force --options runtime --timestamp --sign "${SIGN_ID}" "${SPARKLE_FW}/Versions/B/Updater.app"
+        echo "  Signed: Updater.app"
+    fi
+
+    if [ -f "${SPARKLE_FW}/Versions/B/Autoupdate" ]; then
+        codesign --force --options runtime --timestamp --sign "${SIGN_ID}" "${SPARKLE_FW}/Versions/B/Autoupdate"
+        echo "  Signed: Autoupdate"
+    fi
+
+    codesign --force --options runtime --timestamp --sign "${SIGN_ID}" "${SPARKLE_FW}"
+    echo "  Signed: Sparkle.framework"
+fi
+
+# Sign Mach-O in Resources (the MotionKit dylib)
 find "${BUILT_APP}/Contents/Resources" -type f | while read f; do
     if file -b "$f" 2>/dev/null | grep -q "Mach-O"; then
         codesign --force --options runtime --timestamp --sign "${SIGN_ID}" "$f"
@@ -138,12 +164,57 @@ echo "  DMG: ${DMG_PATH} ($(du -h "${DMG_PATH}" | cut -f1))"
 echo "[8/12] Submitting DMG for notarization (this may take a few minutes)..."
 xcrun notarytool submit "${DMG_PATH}" --keychain-profile "${KEYCHAIN_PROFILE}" --wait
 
-echo "[9/12] Stapling notarization ticket..."
+echo "[9/14] Stapling notarization ticket..."
 xcrun stapler staple "${DMG_PATH}"
 echo "  Stapled: ${DMG_PATH}"
 
-echo "[10/12] Committing version bump..."
-git add "${VERSION_FILE}"
+echo "[10/14] Generating Sparkle EdDSA signature..."
+if [ ! -x "${SPARKLE_SIGN}" ]; then
+    echo "ERROR: Sparkle sign_update not found at ${SPARKLE_SIGN}" >&2
+    echo "Download Sparkle tools and place sign_update at ${SPARKLE_SIGN}" >&2
+    exit 1
+fi
+SPARKLE_SIG=$("${SPARKLE_SIGN}" "${DMG_PATH}" | grep -o 'edSignature="[^"]*"' | sed 's/edSignature="//;s/"//')
+FILE_SIZE=$(stat -f%z "${DMG_PATH}")
+PUB_DATE=$(date -u "+%a, %d %b %Y %H:%M:%S +0000")
+echo "  Signature: ${SPARKLE_SIG}"
+
+echo "[11/14] Updating appcast.xml..."
+python3 - <<PY
+import re
+from pathlib import Path
+
+path = Path("appcast.xml")
+text = path.read_text()
+item = f'''    <item>
+      <title>SpliceKit Motion v${VERSION}</title>
+      <sparkle:version>${VERSION}</sparkle:version>
+      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>${PUB_DATE}</pubDate>
+      <description><![CDATA[
+        <h2>What's New in ${VERSION}</h2>
+        <p>${NOTES}</p>
+      ]]></description>
+      <enclosure
+        url="https://github.com/${RELEASE_REPO}/releases/download/v${VERSION}/${DMG_NAME}"
+        sparkle:edSignature="${SPARKLE_SIG}"
+        length="${FILE_SIZE}"
+        type="application/octet-stream" />
+    </item>
+'''
+marker = "<language>en</language>"
+idx = text.find(marker)
+if idx == -1:
+    raise SystemExit("ERROR: appcast.xml missing <language>en</language> marker")
+insert_at = idx + len(marker)
+text = text[:insert_at] + "\n" + item + text[insert_at:]
+path.write_text(text)
+print("  appcast.xml updated")
+PY
+
+echo "[12/14] Committing version bump and appcast..."
+git add "${VERSION_FILE}" appcast.xml
 if ! git diff --cached --quiet; then
     git commit -m "Release v${VERSION}: ${NOTES}"
     git push "${PUSH_REMOTE}" "HEAD:${PUSH_BRANCH}"
@@ -151,7 +222,7 @@ else
     echo "  No version changes to commit"
 fi
 
-echo "[11/12] Tagging and pushing..."
+echo "[13/14] Tagging and pushing..."
 if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
     git tag -d "${TAG_NAME}"
 fi
@@ -167,7 +238,7 @@ if [ -z "${REMOTE_TAG_SHA}" ]; then
     git push "${PUSH_REMOTE}" "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
 fi
 
-echo "[12/12] Creating GitHub release..."
+echo "[14/14] Creating GitHub release..."
 if gh release create "${TAG_NAME}" "${DMG_PATH}" \
     -R "${RELEASE_REPO}" \
     --verify-tag \
@@ -187,5 +258,7 @@ echo "========================================="
 echo ""
 echo "  - Built via Xcode, signed, notarized, stapled"
 echo "  - DMG: ${DMG_PATH}"
+echo "  - Appcast updated with EdDSA signature"
 echo "  - Pushed to ${PUSH_BRANCH}, GitHub release created"
+echo "  - Sparkle will auto-notify users"
 echo ""

@@ -4,6 +4,9 @@ build/
 *.a
 *.dylib
 
+# Release DMGs (shipped via GitHub releases, not git)
+patcher/*.dmg
+
 # Swift / Xcode
 .build/
 DerivedData/

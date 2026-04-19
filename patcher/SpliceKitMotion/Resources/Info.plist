@@ -26,5 +26,11 @@
 	<string>Copyright © Brian Elliott Tate 2026. All Rights Reserved.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/elliotttate/MotionKit/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>6Mnotk0Hz2FeDtGWEkUOtlSl+O9EctXXjH0xtRMaoas=</string>
 </dict>
 </plist>
