@@ -1423,7 +1423,13 @@ static void SpliceKit_appDidLaunch(void) {
         } else {
             SpliceKit_log(@"Skipping automatic Motion document bootstrap to avoid launch-time UI churn");
         }
-        SpliceKit_log(@"Skipping FCP-only toolbar, timeline, and Lua setup in Motion");
+        SpliceKit_log(@"Skipping FCP-only toolbar and timeline setup in Motion");
+
+        // Lua is host-agnostic; initialize it so lua.execute / lua.reset RPC
+        // methods work in Motion. Without this, sLuaQueue is NULL and any Lua
+        // RPC crashes with a nil-queue dispatch_sync.
+        SpliceKitLua_initialize();
+
         SpliceKit_log(@"Motion-safe launch path ready");
         return;
     }
@@ -1574,42 +1580,15 @@ static void SpliceKit_bypassMotionPrivacyGateIfPossible(void) {
 // the project browser dialog, which is what Motion would do organically
 // once a logged-in subscribed user finished onboarding.
 static void SpliceKit_motionSkipOnboardingFlow(id self, SEL _cmd) {
-    SpliceKit_log(@"[Motion] runFlow intercepted — skipping onboarding, opening project browser");
-
-    Class controllerClass = objc_getClass("MGDocumentController");
-    if (!controllerClass) {
-        SpliceKit_log(@"[Motion] MGDocumentController not available — cannot open browser");
-        return;
-    }
-    id controller = ((id (*)(id, SEL))objc_msgSend)(
-        controllerClass, @selector(sharedDocumentController));
-    if (!controller) {
-        SpliceKit_log(@"[Motion] sharedDocumentController returned nil");
-        return;
-    }
-
-    SEL dictSel = NSSelectorFromString(@"dictionaryForDefaultDocument");
-    SEL openSel = NSSelectorFromString(@"newDocumentFromProjectBrowser:");
-    id payload = nil;
-    if ([controller respondsToSelector:dictSel]) {
-        @try {
-            payload = ((id (*)(id, SEL))objc_msgSend)(controller, dictSel);
-        } @catch (NSException *exception) {
-            SpliceKit_log(@"[Motion] dictionaryForDefaultDocument threw %@",
-                          exception.reason ?: exception.name);
-        }
-    }
-    if (![controller respondsToSelector:openSel]) {
-        SpliceKit_log(@"[Motion] newDocumentFromProjectBrowser: not available");
-        return;
-    }
-    @try {
-        ((void (*)(id, SEL, id))objc_msgSend)(controller, openSel, payload);
-        SpliceKit_log(@"[Motion] Triggered newDocumentFromProjectBrowser:");
-    } @catch (NSException *exception) {
-        SpliceKit_log(@"[Motion] newDocumentFromProjectBrowser: threw %@",
-                      exception.reason ?: exception.name);
-    }
+    // No-op override for POFDesktopOnboardingCoordinator.runFlow. Motion's
+    // default post-onboarding behaviour is to open the Project Browser modal,
+    // which blocks automation and is confusing on every launch. We skip both
+    // the onboarding flow AND the browser — the app becomes immediately
+    // responsive with no document open. Users can open a project via
+    // File > Open from the menu bar after launch completes.
+    (void)self;
+    (void)_cmd;
+    SpliceKit_log(@"[Motion] runFlow intercepted — skipping onboarding (no auto-open)");
 }
 
 static BOOL sMotionOnboardingFlowBypassed = NO;
@@ -2059,16 +2038,12 @@ static void SpliceKit_init(void) {
     // Motion doesn't have CloudContent, SPV subscription validation, or the
     // PCUserDefaultsMigrator shutdown hang, so skip all FCP-specific patches.
     if (SpliceKit_isMotionHost()) {
-        // Only suppress Motion's untitled/template-browser launcher when our
-        // bootstrap watchdog will create a document itself. With autocreate
-        // disabled (the safe default — see MOTIONKIT_AUTOCREATE_DOCUMENT and
-        // the OZTimelineView runaway-redraw issue), the launcher is the user's
-        // only way to open a real project, so we must let it appear.
-        if (SpliceKit_shouldRunMotionBootstrapWatchdog()) {
-            SpliceKit_disableMotionAutoOpenUntitled();
-        } else {
-            SpliceKit_log(@"[Motion] Leaving native launcher enabled (autocreate disabled)");
-        }
+        // Always suppress Motion's untitled/template-browser launcher. The
+        // Project Browser is a modal that blocks Motion from becoming fully
+        // responsive until the user dismisses it, which defeats automation
+        // and is confusing on launch. Users can still open a project via
+        // File > Open from the menu bar after launch completes.
+        SpliceKit_disableMotionAutoOpenUntitled();
         SpliceKit_log(@"Skipped FCP-specific constructor patches (Motion host)");
     } else {
         SpliceKit_disableCloudContent();

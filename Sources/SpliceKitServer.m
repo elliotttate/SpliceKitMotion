@@ -10672,9 +10672,14 @@ static NSDictionary *SpliceKit_handleCommandSearch(NSDictionary *params) {
 }
 
 static NSDictionary *SpliceKit_handleCommandExecute(NSDictionary *params) {
-    NSString *action = params[@"action"];
-    NSString *type = params[@"type"];
-    if (!action) return @{@"error": @"action parameter required"};
+    id rawAction = params[@"action"];
+    id rawType = params[@"type"];
+    if (!rawAction || ![rawAction isKindOfClass:[NSString class]]
+        || ((NSString *)rawAction).length == 0) {
+        return @{@"error": @"action parameter required (non-empty string)"};
+    }
+    NSString *action = (NSString *)rawAction;
+    NSString *type = [rawType isKindOfClass:[NSString class]] ? (NSString *)rawType : nil;
     if (type.length == 0) {
         type = SpliceKit_isMotionHost() ? @"motion_command" : @"timeline";
     }

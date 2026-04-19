@@ -904,6 +904,7 @@ static BOOL SpliceKitMotionCommandIsBlocked(NSString *selectorName, NSString *co
     // create one. Users can still open existing project files from Motion's
     // launcher dialog, which produces a healthy document.
     static NSSet<NSString *> *blockedDocumentCreationSelectors = nil;
+    static NSSet<NSString *> *stateDependentSelectors = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         blockedDocumentCreationSelectors = [NSSet setWithArray:@[
@@ -911,6 +912,56 @@ static BOOL SpliceKitMotionCommandIsBlocked(NSString *selectorName, NSString *co
             @"newDocumentFromProjectBrowser:",
             @"makeUntitledDocumentOfType:",
             @"openUntitledDocumentAndDisplay:error:",
+        ]];
+        // Selectors that SIGSEGV inside Motion's C++ internals when fired
+        // through NSApplication sendAction: without the interactive UI state
+        // they depend on (selected marker, keyframe, angle, etc). Motion's
+        // validateMenuItem: returns YES for these even when the required
+        // state is absent.
+        stateDependentSelectors = [NSSet setWithArray:@[
+            @"editMarker:",
+            @"deleteMarker:",
+            @"renameMarker:",
+            @"editKeyframe:",
+            @"deleteKeyframe:",
+            @"changeMarkerType:",
+            @"markMarkerCompleted:",
+            @"changeMarkerName:",
+            // Any selector that opens a modal file picker or confirmation
+            // dialog hangs the main thread until the user dismisses it.
+            // Fire-and-forget async doesn't help because the dialog still
+            // pegs the UI. Block them in the palette; scripts can still
+            // invoke the underlying selector via runtime.callInstanceMethod.
+            @"shareToDefaultDestination:",
+            @"shareToDestination:",
+            @"shareBatch:",
+            @"importFiles:",
+            @"importAsDocument:",
+            @"openDocument:",
+            @"saveDocument:",
+            @"saveDocumentAs:",
+            @"saveAsTemplate:",
+            @"saveCustomLayout:",
+            @"restoreDocumentFromAutosave:",
+            @"revertDocumentToSaved:",
+            @"newDocumentFromProjectBrowser:",
+            @"recordingOptions:",
+            @"insertTime:",
+            @"record:",
+            @"findAndReplace:",
+            // Additional dialog-opening selectors found via Motion's
+            // NSProCommands.plist (commands whose display name ends in "...").
+            @"bakeObject:",
+            @"runToolbarCustomizationPalette:",
+            @"showImagePlaygroundEditor:",
+            @"pasteSpecial:",
+            @"runPageLayout:",
+            @"printDocument:",
+            @"editProjectSettings:",
+            @"reconnectAllMedia:",
+            @"removeOpticalFlowCache:",
+            // Opens macOS Help Viewer which pops an unwanted window.
+            @"showHelp:",
         ]];
     });
     if ([blockedDocumentCreationSelectors containsObject:selectorName]) {
@@ -921,11 +972,21 @@ static BOOL SpliceKitMotionCommandIsBlocked(NSString *selectorName, NSString *co
         }
         return YES;
     }
+    if ([stateDependentSelectors containsObject:selectorName]) {
+        if (reasonOut) {
+            *reasonOut = [NSString stringWithFormat:
+                          @"%@ requires an interactive selection (marker/keyframe) and crashes "
+                          @"when fired from the command palette. Use Motion's native UI for this action.",
+                          selectorName];
+        }
+        return YES;
+    }
     return NO;
 }
 
 - (SpliceKitCommand *)motionCommandForIdentifier:(NSString *)identifier
                                        ambiguous:(NSArray<SpliceKitCommand *> **)ambiguous {
+    if (!identifier || ![identifier isKindOfClass:[NSString class]]) return nil;
     NSString *trimmed = [identifier stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length == 0) return nil;
@@ -1044,8 +1105,55 @@ static BOOL SpliceKitMotionCommandIsBlocked(NSString *selectorName, NSString *co
         };
     }
 
+    // Preflight synchronously (cheap) — this checks targetForAction + validateMenuItem
+    // so the RPC can return a fast "not available" response without blocking on
+    // the actual dispatch. The dispatch itself runs async so modal commands
+    // (share, library, inspector, etc.) don't block the bridge.
     __block NSDictionary *result = nil;
-    SpliceKit_executeOnMainThread(^{
+    __block BOOL preflightFailed = NO;
+    __block BOOL preflightValid = YES;
+    __block NSString *preflightClass = nil;
+    // Short-timeout preflight. If the main thread is busy (Motion is
+    // rendering/modal), we skip validation rather than blocking the RPC and
+    // dispatch anyway — the blocklist and async dispatch above protect us.
+    SpliceKit_executeCocoaUIBlock(^{
+        id app = ((id (*)(id, SEL))objc_msgSend)(
+            objc_getClass("NSApplication"), @selector(sharedApplication));
+        SEL selector = NSSelectorFromString(selectorName);
+        id dispatchTarget = nil;
+        if ([app respondsToSelector:@selector(targetForAction:)]) {
+            dispatchTarget = ((id (*)(id, SEL, SEL))objc_msgSend)(app, @selector(targetForAction:), selector);
+        }
+        if (dispatchTarget) preflightClass = NSStringFromClass([dispatchTarget class]);
+
+        NSMenuItem *sender = [[NSMenuItem alloc] initWithTitle:commandID ?: selectorName
+                                                        action:selector
+                                                 keyEquivalent:@""];
+        if (tagNumber != nil && tagNumber != (id)kCFNull) {
+            sender.tag = tagNumber.integerValue;
+        }
+
+        if (dispatchTarget && [dispatchTarget respondsToSelector:@selector(validateMenuItem:)]) {
+            preflightValid = ((BOOL (*)(id, SEL, id))objc_msgSend)(
+                dispatchTarget, @selector(validateMenuItem:), sender);
+        }
+    }, 0.5, @"commandPalette.preflight");
+
+    preflightFailed = !preflightValid;
+
+    if (preflightFailed) {
+        return @{@"error": [NSString stringWithFormat:
+                             @"%@ is not available in the current state "
+                             @"(validateMenuItem: returned NO).", selectorName],
+                 @"command": commandID ?: @"",
+                 @"selector": selectorName,
+                 @"targetClass": preflightClass ?: [NSNull null]};
+    }
+
+    // Dispatch the actual action asynchronously — sendAction may open modal
+    // windows or invoke long-running code that must not block the bridge.
+    // We log outcomes to the MotionKit log instead of returning them.
+    SpliceKit_executeOnMainThreadAsync(^{
         @try {
             id app = ((id (*)(id, SEL))objc_msgSend)(
                 objc_getClass("NSApplication"), @selector(sharedApplication));
@@ -1093,32 +1201,32 @@ static BOOL SpliceKitMotionCommandIsBlocked(NSString *selectorName, NSString *co
             }
 
             if (!handled) {
-                result = @{@"error": [NSString stringWithFormat:@"No responder handled %@", selectorName],
-                           @"command": commandID ?: @"",
-                           @"selector": selectorName,
-                           @"targetClass": dispatchTarget ? NSStringFromClass([dispatchTarget class]) : [NSNull null]};
+                SpliceKit_log(@"[Palette] No responder handled %@ for command '%@'",
+                              selectorName, commandID ?: @"?");
                 return;
             }
 
-            result = @{
-                @"status": @"ok",
-                @"command": commandID ?: @"",
-                @"resolvedFrom": (![action isEqualToString:commandID] &&
-                                  ![action isEqualToString:commandName] &&
-                                  ![action isEqualToString:selectorName]) ? action : [NSNull null],
-                @"selector": selectorName,
-                @"tag": tagNumber ?: [NSNull null],
-                @"targetClass": dispatchTarget ? NSStringFromClass([dispatchTarget class]) : [NSNull null],
-                @"fallbackSource": fallbackSource ?: [NSNull null],
-            };
+            SpliceKit_log(@"[Palette] Dispatched '%@' -> %@ on %@%@",
+                          commandID ?: @"?", selectorName,
+                          dispatchTarget ? NSStringFromClass([dispatchTarget class]) : @"<none>",
+                          fallbackSource ? [NSString stringWithFormat:@" (via %@)", fallbackSource] : @"");
         } @catch (NSException *exception) {
-            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", exception.reason ?: @"unknown"],
-                       @"command": commandID ?: @"",
-                        @"selector": selectorName};
+            SpliceKit_log(@"[Palette] Exception dispatching '%@' (%@): %@",
+                          commandID ?: @"?", selectorName, exception.reason ?: @"unknown");
         }
     });
 
-    return result ?: @{@"error": @"Motion command execution failed"};
+    return @{
+        @"status": @"dispatched",
+        @"command": commandID ?: @"",
+        @"resolvedFrom": (![action isEqualToString:commandID] &&
+                          ![action isEqualToString:commandName] &&
+                          ![action isEqualToString:selectorName]) ? action : [NSNull null],
+        @"selector": selectorName,
+        @"tag": tagNumber ?: [NSNull null],
+        @"targetClass": preflightClass ?: [NSNull null],
+        @"async": @YES,
+    };
 }
 
 - (void)registerMotionCommands {

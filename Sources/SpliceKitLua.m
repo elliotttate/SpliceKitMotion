@@ -49,7 +49,7 @@ static NSMutableDictionary<NSString *, NSTimer *> *sDebounceTimers = nil;
 
 // Safety: execution timeout
 static NSDate *sExecutionStartTime = nil;
-static const NSTimeInterval kExecutionTimeout = 30.0;
+static const NSTimeInterval kExecutionTimeout = 5.0;
 
 // Safety: memory limit (256 MB)
 static size_t sLuaMemoryUsed = 0;
@@ -85,6 +85,20 @@ static void *SpliceKitLua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
     }
     sLuaMemoryUsed = sLuaMemoryUsed - osize + nsize;
     return realloc(ptr, nsize);
+}
+
+// Safely wrap a Lua C string into an NSString. Lua strings are byte buffers
+// that may not be valid UTF-8 (e.g. after string.reverse on multibyte chars).
+// Plain @(cstr) returns nil for invalid UTF-8, which then crashes
+// NSDictionary / NSArray when used as a value.
+static NSString *SpliceKitLua_safeString(const char *cstr, const char *fallback) {
+    if (!cstr) return [NSString stringWithUTF8String:fallback ?: "<nil>"];
+    NSString *ns = [NSString stringWithUTF8String:cstr];
+    if (ns) return ns;
+    size_t len = strlen(cstr);
+    ns = [[NSString alloc] initWithBytes:cstr length:len
+                                encoding:NSISOLatin1StringEncoding];
+    return ns ?: @"<invalid utf-8>";
 }
 
 // ============================================================================
@@ -1216,6 +1230,14 @@ void SpliceKitLua_initialize(void) {
 }
 
 void SpliceKitLua_reset(void) {
+    if (!sLuaInitialized || !sLuaQueue) {
+        SpliceKit_log(@"[Lua] reset requested before initialize — initializing now");
+        SpliceKitLua_initialize();
+        if (!sLuaQueue) {
+            SpliceKit_log(@"[Lua] reset aborted: queue still nil after initialize");
+            return;
+        }
+    }
     dispatch_sync(sLuaQueue, ^{
         if (sLuaState) {
             lua_close(sLuaState);
@@ -1257,7 +1279,7 @@ NSDictionary *SpliceKitLua_execute(NSString *code) {
             const char *err = lua_tostring(L, -1);
             result = @{
                 @"ok": @NO,
-                @"error": @(err ?: "compilation error"),
+                @"error": SpliceKitLua_safeString(err, "compilation error"),
                 @"output": [sPrintBuffer copy],
                 @"durationMs": SpliceKitLua_elapsedMilliseconds(startTime)
             };
@@ -1268,7 +1290,7 @@ NSDictionary *SpliceKitLua_execute(NSString *code) {
                 const char *err = lua_tostring(L, -1);
                 result = @{
                     @"ok": @NO,
-                    @"error": @(err ?: "runtime error"),
+                    @"error": SpliceKitLua_safeString(err, "runtime error"),
                     @"output": [sPrintBuffer copy],
                     @"durationMs": SpliceKitLua_elapsedMilliseconds(startTime)
                 };
@@ -1280,8 +1302,23 @@ NSDictionary *SpliceKitLua_execute(NSString *code) {
                 if (nresults > 0) {
                     NSMutableArray *values = [NSMutableArray array];
                     for (int i = 1; i <= nresults; i++) {
-                        const char *s = luaL_tolstring(L, i, NULL);
-                        if (s) [values addObject:@(s)];
+                        size_t slen = 0;
+                        const char *s = luaL_tolstring(L, i, &slen);
+                        if (s) {
+                            // Lua strings are raw bytes — may not be valid UTF-8
+                            // (e.g. string.reverse on multibyte input). Try strict
+                            // UTF-8 first, fall back to lossy latin1 to avoid a
+                            // nil NSString that would crash addObject:.
+                            NSString *ns = [[NSString alloc] initWithBytes:s
+                                                                    length:slen
+                                                                  encoding:NSUTF8StringEncoding];
+                            if (!ns) {
+                                ns = [[NSString alloc] initWithBytes:s
+                                                              length:slen
+                                                            encoding:NSISOLatin1StringEncoding];
+                            }
+                            [values addObject:ns ?: @"<invalid utf-8>"];
+                        }
                         lua_pop(L, 1);  // pop tolstring result
                     }
                     resultStr = [values componentsJoinedByString:@"\t"];
@@ -1343,7 +1380,7 @@ NSDictionary *SpliceKitLua_executeFile(NSString *path) {
                 const char *err = lua_tostring(L, -1);
                 result = @{
                     @"ok": @NO,
-                    @"error": @(err ?: "runtime error"),
+                    @"error": SpliceKitLua_safeString(err, "runtime error"),
                     @"output": [sPrintBuffer copy],
                     @"durationMs": SpliceKitLua_elapsedMilliseconds(startTime)
                 };
@@ -1354,8 +1391,19 @@ NSDictionary *SpliceKitLua_executeFile(NSString *path) {
                 if (nresults > 0) {
                     NSMutableArray *values = [NSMutableArray array];
                     for (int i = 1; i <= nresults; i++) {
-                        const char *s = luaL_tolstring(L, i, NULL);
-                        if (s) [values addObject:@(s)];
+                        size_t slen = 0;
+                        const char *s = luaL_tolstring(L, i, &slen);
+                        if (s) {
+                            NSString *ns = [[NSString alloc] initWithBytes:s
+                                                                    length:slen
+                                                                  encoding:NSUTF8StringEncoding];
+                            if (!ns) {
+                                ns = [[NSString alloc] initWithBytes:s
+                                                              length:slen
+                                                            encoding:NSISOLatin1StringEncoding];
+                            }
+                            [values addObject:ns ?: @"<invalid utf-8>"];
+                        }
                         lua_pop(L, 1);
                     }
                     resultStr = [values componentsJoinedByString:@"\t"];
